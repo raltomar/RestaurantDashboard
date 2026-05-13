@@ -518,7 +518,12 @@ with tab_reviews:
             drill = rev_f[rev_f["restaurant_id"] == rid]
             st.markdown(f"**{len(drill)} reviews** for *{selected_restaurant}*")
             if not drill.empty:
-                col_r1, col_r2 = st.columns([1, 2])
+                st.dataframe(
+                    drill[["source", "title", "rating", "sentiment_score", "text"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                col_r1, col_r2 = st.columns(2)
                 with col_r1:
                     rating_hist = px.histogram(
                         drill, x="rating", nbins=10,
@@ -528,23 +533,18 @@ with tab_reviews:
                     )
                     st.plotly_chart(rating_hist, use_container_width=True)
                 with col_r2:
-                    st.dataframe(
-                        drill[["source", "title", "rating", "sentiment_score", "text"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                drill_clean = drill.dropna(subset=["sentiment_score", "rating"])
-                if len(drill_clean) >= 2:
-                    sent_fig = px.scatter(
-                        drill_clean,
-                        x="sentiment_score", y="rating", color="source",
-                        title=f"Sentiment vs Rating — {selected_restaurant}",
-                        labels={"sentiment_score": "Sentiment Score", "rating": "Star Rating"},
-                        template="plotly_white", opacity=0.8,
-                    )
-                    st.plotly_chart(sent_fig, use_container_width=True)
-                else:
-                    st.info("Not enough reviews with sentiment data for this restaurant.")
+                    drill_clean = drill.dropna(subset=["sentiment_score", "rating"])
+                    if len(drill_clean) >= 2:
+                        sent_fig = px.scatter(
+                            drill_clean,
+                            x="sentiment_score", y="rating", color="source",
+                            title=f"Sentiment vs Rating — {selected_restaurant}",
+                            labels={"sentiment_score": "Sentiment Score", "rating": "Star Rating"},
+                            template="plotly_white", opacity=0.8,
+                        )
+                        st.plotly_chart(sent_fig, use_container_width=True)
+                    else:
+                        st.info("Not enough reviews with sentiment data for this restaurant.")
     else:
         st.dataframe(
             rev_f[["source", "title", "rating", "sentiment_score", "text"]].head(200),
