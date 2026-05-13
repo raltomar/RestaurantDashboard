@@ -151,6 +151,8 @@ def load_data():
     # Numeric casting
     for col in ["score", "ta score", "number of reviews", "ta number of reviews"]:
         restaurants[col] = pd.to_numeric(restaurants[col], errors="coerce")
+    # Score of 0 means no rating was scraped, not an actual zero
+    restaurants.loc[restaurants["score"] == 0, "score"] = None
     for col in ["rating", "sentiment_score"]:
         reviews[col] = pd.to_numeric(reviews[col], errors="coerce")
 
