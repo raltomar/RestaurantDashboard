@@ -428,7 +428,7 @@ with tab_overview:
     c1.metric("Restaurants", len(df_f))
     c2.metric("Avg Score (YP)", f"{df_f['score'].mean():.2f}" if df_f['score'].notna().any() else "—")
     c3.metric("Avg TA Score", f"{df_f['ta score'].mean():.2f}" if df_f['ta score'].notna().any() else "—")
-    c4.metric("Total Reviews", f"{int(df_f['total_reviews'].sum()):,}")
+    c4.metric("Total Reviews", f"{len(rev_f):,}")
 
     st.divider()
     st.markdown("#### Top Restaurants by Score")
