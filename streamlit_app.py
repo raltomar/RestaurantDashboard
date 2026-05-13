@@ -173,8 +173,8 @@ def make_rating_hist(df):
     return fig
 
 
-def make_category_bar(df_long, top_n=15):
-    counts = df_long["category"].value_counts().head(top_n).reset_index()
+def make_category_bar(df_long):
+    counts = df_long["category"].value_counts().reset_index()
     counts.columns = ["category", "count"]
     fig = px.bar(
         counts, x="count", y="category", orientation="h",
@@ -317,8 +317,6 @@ with st.sidebar:
     selected_sources = st.multiselect(
         "Review sources", options=all_sources, default=all_sources,
     )
-    top_n = st.slider("Top N categories", 5, 30, 15)
-
     with st.expander("About this dashboard"):
         st.markdown(
             "**Data source:** Restaurant listings scraped from Yellow Pages and TripAdvisor "
@@ -411,7 +409,7 @@ with tab_charts:
     with col1:
         st.plotly_chart(make_rating_hist(df_f), use_container_width=True)
     with col2:
-        st.plotly_chart(make_category_bar(cat_f, top_n=top_n), use_container_width=True)
+        st.plotly_chart(make_category_bar(cat_f), use_container_width=True)
 
     col3, col4 = st.columns(2)
     with col3:
