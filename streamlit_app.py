@@ -30,7 +30,30 @@ except ImportError:
 
 DB_URL = "https://github.com/raltomar/RestaurantsWebScrape/raw/refs/heads/main/restaurants_data.db"
 DB_PATH = "restaurants_data.db"
-GEOCODE_CACHE = "geocode_cache.csv"
+
+CATEGORY_CLUSTERS = [
+    ("Asian",             ["Sushi", "Japanese", "Chinese", "Thai", "Filipino", "Indian", "Mongolian", "Korean", "Vietnamese", "Asian"]),
+    ("Mexican & Latin",   ["Mexican", "Latin American", "Caribbean", "Cuban", "Spanish"]),
+    ("Italian & Pizza",   ["Italian", "Pizza"]),
+    ("Seafood",           ["Seafood", "Fish & Seafood"]),
+    ("Mediterranean",     ["Mediterranean", "Greek", "Middle Eastern", "French"]),
+    ("Bars & Nightlife",  ["Cocktail Lounge", "Brew Pub", "Sports Bar", "Tavern", "Night Club", "Wine Bar"]),
+    ("Coffee & Bakery",   ["Coffee", "Breakfast", "Brunch", "Bakeries", "Bakery", "Donut", "Bagel", "Cafeteria"]),
+    ("Barbecue",          ["Barbecue", "Hawaiian"]),
+    ("American",          ["American", "Family Style", "Steak", "Hamburger", "Chicken", "Home Cooking", "Buffet", "Sandwich"]),
+    ("Bars",              ["Bar"]),
+    ("Desserts",          ["Dessert", "Ice Cream"]),
+    ("Health & Specialty",["Health Food", "Juice"]),
+]
+
+def assign_cluster(cat_string):
+    if not cat_string or (isinstance(cat_string, float) and pd.isna(cat_string)):
+        return "Other"
+    s = str(cat_string).lower()
+    for cluster_name, keywords in CATEGORY_CLUSTERS:
+        if any(kw.lower() in s for kw in keywords):
+            return cluster_name
+    return "Other"
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
@@ -62,37 +85,26 @@ def load_data():
         if col in restaurants.columns:
             restaurants[col] = restaurants[col].astype(str).str.strip().replace("nan", None)
 
-    # Category columns
+    # Category clustering
     restaurants["categories_list"] = (
         restaurants["categories"]
         .fillna("")
         .str.split(",")
         .apply(lambda xs: [x.strip() for x in xs if x.strip()])
     )
-    restaurants["primary_category"] = restaurants["categories_list"].apply(
-        lambda xs: xs[0] if xs else "Unknown"
-    )
+    restaurants["cluster"] = restaurants["categories"].apply(assign_cluster)
+    restaurants["primary_category"] = restaurants["cluster"]
     restaurants["combined_score"] = restaurants[["score", "ta score"]].mean(axis=1)
     restaurants["total_reviews"] = (
         restaurants["number of reviews"].fillna(0)
         + restaurants["ta number of reviews"].fillna(0)
     )
 
-    # Merge geocode cache (built by the notebook)
-    if os.path.exists(GEOCODE_CACHE):
-        geo = pd.read_csv(GEOCODE_CACHE)
-        restaurants = restaurants.merge(geo, on="address", how="left")
-    else:
-        restaurants["lat"] = None
-        restaurants["lon"] = None
+    # Use lat/lon already in the database
+    restaurants = restaurants.rename(columns={"latitude": "lat", "longitude": "lon"})
 
-    categories_long = (
-        restaurants[["id", "name", "score", "ta score", "categories_list"]]
-        .explode("categories_list")
-        .rename(columns={"categories_list": "category"})
-        .dropna(subset=["category"])
-    )
-    categories_long = categories_long[categories_long["category"] != ""]
+    categories_long = restaurants[["id", "name", "score", "ta score", "cluster"]].copy()
+    categories_long = categories_long.rename(columns={"cluster": "category"})
 
     return restaurants, reviews, categories_long
 
@@ -117,7 +129,7 @@ def make_map(df):
     for _, row in df_map.iterrows():
         popup_html = (
             f"<b>{row['name']}</b><br>"
-            f"Google: {row.get('score', 'N/A')} | TA: {row.get('ta score', 'N/A')}<br>"
+            f"Score: {row.get('score', 'N/A')} | TA: {row.get('ta score', 'N/A')}<br>"
             f"<i>{row.get('categories', 'N/A')}</i><br>"
             f"Hours: {row.get('hours', 'N/A')}<br>"
             f"Phone: {row.get('phone', 'N/A')}"
@@ -137,18 +149,18 @@ def make_map(df):
 def make_rating_hist(df):
     fig = go.Figure()
     fig.add_trace(go.Histogram(
-        x=df["score"].dropna(), name="Google Score",
+        x=df["score"].dropna(), name="Score",
         opacity=0.7, marker_color="#2A9D8F",
         xbins=dict(start=0, end=5, size=0.25),
     ))
     fig.add_trace(go.Histogram(
-        x=df["ta score"].dropna(), name="TripAdvisor Score",
+        x=df["ta score"].dropna(), name="TA Score",
         opacity=0.6, marker_color="#E76F51",
         xbins=dict(start=0, end=5, size=0.25),
     ))
     fig.update_layout(
         barmode="overlay",
-        title="Score Distribution: Google vs TripAdvisor",
+        title="Score Distribution: Yellow Pages vs TripAdvisor",
         xaxis_title="Score (0–5)", yaxis_title="Number of Restaurants",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         template="plotly_white",
@@ -167,8 +179,8 @@ def make_category_bar(df_long, top_n=15):
     fig = px.bar(
         counts, x="count", y="category", orientation="h",
         color="count", color_continuous_scale="Teal",
-        title=f"Top {top_n} Cuisine Categories",
-        labels={"count": "Number of Restaurants", "category": "Category"},
+        title="Restaurants by Cuisine Cluster",
+        labels={"count": "Number of Restaurants", "category": "Cuisine"},
         template="plotly_white",
     )
     fig.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
@@ -179,14 +191,11 @@ def make_cross_source_scatter(df):
     df_s = df.dropna(subset=["score", "ta score"]).copy()
     if df_s.empty:
         return go.Figure().update_layout(title="No data with both scores")
-    df_s["primary_category"] = df_s["categories_list"].apply(
-        lambda xs: xs[0] if isinstance(xs, list) and xs else "Unknown"
-    )
     fig = px.scatter(
         df_s, x="score", y="ta score", color="primary_category",
         hover_data={"name": True, "score": True, "ta score": True, "primary_category": False},
-        title="Cross-Source Score Comparison: Google vs TripAdvisor",
-        labels={"score": "Google Score", "ta score": "TripAdvisor Score"},
+        title="Score Comparison: Yellow Pages vs TripAdvisor",
+        labels={"score": "Score (YP)", "ta score": "TA Score", "primary_category": "Cuisine"},
         template="plotly_white", opacity=0.75,
     )
     corr = df_s["score"].corr(df_s["ta score"])
@@ -235,11 +244,16 @@ def make_top_table(df, n=20):
     cols = ["name", "score", "ta score", "number of reviews", "categories"]
     df_top = df.sort_values("score", ascending=False).head(n)[cols].reset_index(drop=True)
     n_rows = len(df_top)
-    fill_colors = [["#f0f9f6" if i % 2 == 0 else "white" for i in range(n_rows)] for _ in cols]
+    row_colors = ["#edf6f4" if i % 2 == 0 else "#ffffff" for i in range(n_rows)]
+    col_fill = [row_colors] * len(cols)
     fig = go.Figure(data=[go.Table(
+        columnwidth=[25, 180, 70, 70, 80, 280],
         header=dict(
-            values=["#", "Name", "Google Score", "TA Score", "# Reviews", "Categories"],
-            fill_color="#2A9D8F", font=dict(color="white", size=12), align="left",
+            values=["#", "Name", "Score", "TA Score", "# Reviews", "Categories"],
+            fill_color="#264653",
+            font=dict(color="#ffffff", size=12, family="Arial"),
+            align="left",
+            height=36,
         ),
         cells=dict(
             values=[
@@ -250,10 +264,17 @@ def make_top_table(df, n=20):
                 df_top["number of reviews"].fillna(0).astype(int).tolist(),
                 df_top["categories"].tolist(),
             ],
-            fill_color=fill_colors, align="left", font=dict(size=11),
+            fill_color=col_fill,
+            align="left",
+            font=dict(color="#1a1a1a", size=11, family="Arial"),
+            height=30,
         ),
     )])
-    fig.update_layout(title=f"Top {n} Restaurants by Google Score", template="plotly_white")
+    fig.update_layout(
+        title=f"Top {n} Restaurants by Score",
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
     return fig
 
 
@@ -262,9 +283,7 @@ def make_top_table(df, n=20):
 def filter_restaurants(df, cuisines, min_score, min_revs):
     mask = pd.Series([True] * len(df), index=df.index)
     if cuisines:
-        mask &= df["categories_list"].apply(
-            lambda xs: any(c in xs for c in cuisines) if isinstance(xs, list) else False
-        )
+        mask &= df["cluster"].isin(cuisines)
     mask &= df["score"].fillna(0) >= min_score
     mask &= df["number of reviews"].fillna(0) >= min_revs
     return df[mask]
@@ -293,7 +312,7 @@ with st.sidebar:
         "Cuisines", options=all_categories, default=[],
         help="Leave blank to show all cuisines",
     )
-    min_score = st.slider("Min Google score", 0.0, 5.0, 0.0, 0.1)
+    min_score = st.slider("Min score", 0.0, 5.0, 0.0, 0.1)
     min_revs = st.slider("Min review count", 0, max_reviews, 0)
     selected_sources = st.multiselect(
         "Review sources", options=all_sources, default=all_sources,
@@ -302,10 +321,10 @@ with st.sidebar:
 
     with st.expander("About this dashboard"):
         st.markdown(
-            "**Data source:** Restaurant listings scraped from Google Maps and TripAdvisor "
+            "**Data source:** Restaurant listings scraped from Yellow Pages and TripAdvisor "
             "by Raphael Altomar. Stored in a SQLite database.\n\n"
-            "**Geocoding:** Addresses resolved to lat/lon via Nominatim (OpenStreetMap). "
-            "Restaurants without resolvable coordinates are excluded from the map.\n\n"
+            "**Coordinates:** Lat/lon sourced directly from the scraped database. "
+            "Restaurants without coordinates are excluded from the map.\n\n"
             "**Sentiment scores:** Pre-computed NLP scores in the Reviews table, ranging −1 (negative) to +1 (positive).\n\n"
             "**Code:** [github.com/raltomar/RestaurantsWebScrape](https://github.com/raltomar/RestaurantsWebScrape)"
         )
@@ -329,18 +348,18 @@ with tab_overview:
     )
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Restaurants", len(df_f))
-    c2.metric("Avg Google Score", f"{df_f['score'].mean():.2f}" if df_f['score'].notna().any() else "—")
+    c2.metric("Avg Score (YP)", f"{df_f['score'].mean():.2f}" if df_f['score'].notna().any() else "—")
     c3.metric("Avg TA Score", f"{df_f['ta score'].mean():.2f}" if df_f['ta score'].notna().any() else "—")
     c4.metric("Total Reviews", f"{int(df_f['total_reviews'].sum()):,}")
 
     st.divider()
-    st.markdown("#### Top Restaurants by Google Score")
+    st.markdown("#### Top Restaurants by Score")
     st.plotly_chart(make_top_table(df_f), use_container_width=True)
 
 # ── Tab: Map ──────────────────────────────────────────────────────────────────
 with tab_map:
     st.markdown(
-        "Each marker represents a restaurant. Color indicates Google score: "
+        "Each marker represents a restaurant. Color indicates score: "
         "**green** ≥4.5 · **light green** ≥4.0 · **orange** ≥3.5 · **red** <3.5. "
         "Click a cluster to zoom in, then click a marker to see details."
     )
@@ -368,9 +387,9 @@ with tab_map:
                     f"**Address:** {row.get('address', '—')}"
                 )
                 col_b.markdown(
-                    f"**Google Score:** {row.get('score', '—')}  \n"
+                    f"**Score:** {row.get('score', '—')}  \n"
                     f"**TA Score:** {row.get('ta score', '—')}  \n"
-                    f"**Google Reviews:** {int(row.get('number of reviews', 0) or 0)}  \n"
+                    f"**Reviews:** {int(row.get('number of reviews', 0) or 0)}  \n"
                     f"**TA Reviews:** {int(row.get('ta number of reviews', 0) or 0)}"
                 )
                 rest_reviews = reviews[reviews["restaurant_id"] == row["id"]]
