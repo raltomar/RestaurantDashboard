@@ -9,8 +9,10 @@ Run:
 """
 
 import os
+import re
 import sqlite3
 import requests
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -45,6 +47,78 @@ CATEGORY_CLUSTERS = [
     ("Desserts",          ["Dessert", "Ice Cream"]),
     ("Health & Specialty",["Health Food", "Juice"]),
 ]
+
+_DAY_MAP = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+
+def _parse_time(t_str):
+    t_str = t_str.strip()
+    for fmt in ("%I:%M %p", "%I:%M%p"):
+        try:
+            dt = datetime.strptime(t_str, fmt)
+            return dt.hour * 60 + dt.minute
+        except ValueError:
+            continue
+    return None
+
+def _expand_days(day_part):
+    day_part = day_part.strip()
+    if " - " in day_part:
+        parts = [p.strip() for p in day_part.split(" - ", 1)]
+        if parts[0] in _DAY_MAP and parts[1] in _DAY_MAP:
+            start, end = _DAY_MAP[parts[0]], _DAY_MAP[parts[1]]
+            if start <= end:
+                return set(range(start, end + 1))
+            else:
+                return set(list(range(start, 7)) + list(range(0, end + 1)))
+    if day_part in _DAY_MAP:
+        return {_DAY_MAP[day_part]}
+    return set()
+
+def is_open_now(hours_str, now=None):
+    """Return True if open, False if closed, None if hours unknown/unparseable."""
+    if now is None:
+        now = datetime.now()
+    if hours_str is None or (isinstance(hours_str, float) and hours_str != hours_str):
+        return None
+    hours_str = str(hours_str).strip()
+    if not hours_str or hours_str.lower() in ("none", "nan"):
+        return None
+    today = now.weekday()
+    now_min = now.hour * 60 + now.minute
+    parsed_any = False
+    for segment in hours_str.split(" | "):
+        try:
+            if "::" not in segment:
+                continue
+            day_part, time_part = segment.split("::", 1)
+            days = _expand_days(day_part)
+            if not days:
+                continue
+            pairs = re.findall(r"(\d{1,2}:\d{2}\s*[ap]m)\s*-\s*(\d{1,2}:\d{2}\s*[ap]m)",
+                               time_part, re.IGNORECASE)
+            if not pairs:
+                continue
+            parsed_any = True
+            if today not in days:
+                continue
+            for open_s, close_s in pairs:
+                open_min, close_min = _parse_time(open_s), _parse_time(close_s)
+                if open_min is None or close_min is None:
+                    continue
+                if close_min <= open_min:
+                    if now_min >= open_min or now_min < close_min:
+                        return True
+                else:
+                    if open_min <= now_min < close_min:
+                        return True
+        except Exception:
+            continue
+    return False if parsed_any else None
+
+def _open_now_mask(hours_series, now=None):
+    if now is None:
+        now = datetime.now()
+    return hours_series.apply(lambda h: is_open_now(h, now) is True)
 
 def assign_cluster(cat_string):
     if not cat_string or (isinstance(cat_string, float) and pd.isna(cat_string)):
@@ -280,12 +354,14 @@ def make_top_table(df, n=20):
 
 # ── Filtering ────────────────────────────────────────────────────────────────
 
-def filter_restaurants(df, cuisines, min_score, min_revs):
+def filter_restaurants(df, cuisines, min_score, min_revs, open_now=False):
     mask = pd.Series([True] * len(df), index=df.index)
     if cuisines:
         mask &= df["cluster"].isin(cuisines)
     mask &= df["score"].fillna(0) >= min_score
     mask &= df["number of reviews"].fillna(0) >= min_revs
+    if open_now:
+        mask &= _open_now_mask(df["hours"])
     return df[mask]
 
 
@@ -314,6 +390,10 @@ with st.sidebar:
     )
     min_score = st.slider("Min score", 0.0, 5.0, 0.0, 0.1)
     min_revs = st.slider("Min review count", 0, max_reviews, 0)
+    open_now = st.checkbox(
+        "Open now", value=False,
+        help="Show only restaurants currently open. Restaurants with unknown hours are excluded.",
+    )
     selected_sources = st.multiselect(
         "Review sources", options=all_sources, default=all_sources,
     )
@@ -328,7 +408,7 @@ with st.sidebar:
         )
 
 # Apply filters
-df_f = filter_restaurants(restaurants, selected_cuisines, min_score, min_revs)
+df_f = filter_restaurants(restaurants, selected_cuisines, min_score, min_revs, open_now=open_now)
 sources = selected_sources if selected_sources else all_sources
 rev_f = reviews[reviews["source"].isin(sources)]
 cat_f = categories_long[categories_long["id"].isin(df_f["id"])]
@@ -453,6 +533,18 @@ with tab_reviews:
                         use_container_width=True,
                         hide_index=True,
                     )
+                drill_clean = drill.dropna(subset=["sentiment_score", "rating"])
+                if len(drill_clean) >= 2:
+                    sent_fig = px.scatter(
+                        drill_clean,
+                        x="sentiment_score", y="rating", color="source",
+                        title=f"Sentiment vs Rating — {selected_restaurant}",
+                        labels={"sentiment_score": "Sentiment Score", "rating": "Star Rating"},
+                        template="plotly_white", opacity=0.8,
+                    )
+                    st.plotly_chart(sent_fig, use_container_width=True)
+                else:
+                    st.info("Not enough reviews with sentiment data for this restaurant.")
     else:
         st.dataframe(
             rev_f[["source", "title", "rating", "sentiment_score", "text"]].head(200),
